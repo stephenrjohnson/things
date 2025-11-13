@@ -98,5 +98,5 @@ This means that the controller works perfectly and I can controll it using Alexa
 ## Parts List
 
 * [RJ45 breakout boards](https://www.amazon.co.uk/dp/B0F23DXK83)  
-* [Cheap standing desk](https://www.amazon.co.uk/dp/B0DBHDKQT7)  
+* [Cheap standing desk / HUANUO Standing Desk](https://www.amazon.co.uk/dp/B0DBHDKQT7)  
 * [ESP32 development board](https://www.amazon.co.uk/ESP-32S-Development-2-4GHz-Bluetooth-Antenna/dp/B071JR9WS9)
