@@ -1,0 +1,285 @@
+esphome:
+  name: standingdesk
+  friendly_name: standingdesk
+  on_boot:
+    priority: 600
+    then:
+      - logger.log: "Sending handshake sequence to wake up desk controller..."
+      - repeat:
+          count: 3
+          then:
+            - uart.write:
+                id: desk
+                data: [0xA5, 0x00, 0x20, 0xDF, 0xFF]
+            - delay: 200ms
+      - logger.log: "Handshake sequence complete."
+
+globals:
+  - id: stop_movement
+    type: bool
+    restore_value: no
+    initial_value: "false"
+  - id: is_moving
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+number:
+  - platform: template
+    name: "Sitting Target Height"
+    id: sitting_target
+    min_value: 72
+    max_value: 82
+    step: 1
+    unit_of_measurement: "cm"
+    optimistic: true
+    restore_value: true
+    initial_value: 72
+    mode: box
+
+  - platform: template
+    name: "Standing Target Height"
+    id: standing_target
+    min_value: 82
+    max_value: 118
+    step: 1
+    unit_of_measurement: "cm"
+    optimistic: true
+    restore_value: true
+    initial_value: 110
+    mode: box
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+  baud_rate: 0   # disable serial log output to free UART pins 1/3
+
+api:
+  encryption:
+    key: ""
+
+ota:
+  - platform: esphome
+    password: ""
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  ap:
+    ssid: "Standingdesk Fallback Hotspot"
+    password: "vdftVsZcz5mY"
+
+captive_portal:
+
+web_server:
+  port: 80
+
+uart:
+  - id: desk
+    baud_rate: 9600
+    tx_pin: 17
+    rx_pin: 16
+    debug:
+      direction: RX
+      dummy_receiver: true
+      after:
+        bytes: 5
+      sequence:
+        - lambda: |-
+            id(controller).write_array(bytes.data(), bytes.size());
+            auto seg_to_digit = [](uint8_t b) -> uint8_t {
+              switch(b) {
+                case 0x3F: return 0;
+                case 0x06: return 1;
+                case 0x5B: return 2;
+                case 0x4F: return 3;
+                case 0x66: return 4;
+                case 0x6D: return 5;
+                case 0x7D: return 6;
+                case 0x07: return 7;
+                case 0x7F: return 8;
+                case 0x6F: return 9;
+                default: return 0xFF;
+              }
+            };
+
+            if (bytes.size() == 5 && bytes[0] == 0x5A) {
+              int height_cm = seg_to_digit(bytes[1]) * 100
+                              + seg_to_digit(bytes[2]) * 10
+                              + seg_to_digit(bytes[3]);
+              if (height_cm < 200 && height_cm > 50) {
+                id(desk_height).publish_state(height_cm);
+              }
+            }
+
+  - id: controller
+    baud_rate: 9600
+    tx_pin: 1
+    rx_pin: 3
+    debug:
+      direction: RX
+      dummy_receiver: true
+      after:
+        bytes: 5
+      sequence:
+        - lambda: |-
+            if (!id(is_moving)) {
+              id(desk).write_array(bytes.data(), bytes.size());
+            }
+
+switch:
+  - platform: template
+    name: "standing"
+    turn_on_action:
+      - button.press: standing
+  - platform: template
+    name: "sitting"
+    turn_on_action:
+      - button.press: sitting
+
+
+
+button:
+  - platform: uart
+    uart_id: desk
+    name: "UP"
+    data: [0xA5, 0x00, 0x20, 0xDF, 0xFF]
+    on_press:
+      then:
+        - script.execute: stop_all_motion
+
+  - platform: uart
+    uart_id: desk
+    name: "DOWN"
+    data: [0xA5, 0x00, 0x40, 0xBF, 0xFF]
+    on_press:
+      then:
+        - script.execute: stop_all_motion
+
+  - platform: template
+    id: sitting
+    name: "Preset 1 (sitting)"
+    on_press:
+      then:
+        - script.execute: stop_all_motion
+        - delay: 200ms
+        - lambda: |-
+            int target = id(sitting_target).state;
+            int current = id(desk_height).state;
+
+            if (isnan(current)) {
+              ESP_LOGW("preset1", "Desk height unknown — aborting move.");
+              return;
+            }
+
+            if (current > target) {
+              ESP_LOGI("preset1", "Desk too high (%.1f cm) — moving down to %.1f cm", current, target);
+              id(move_down_to_target).execute(target);
+            } else if (current < target) {
+              ESP_LOGI("preset1", "Desk too low (%.1f cm) — moving up to %.1f cm", current, target);
+              id(move_up_to_target).execute(target);
+            } else {
+              ESP_LOGI("preset1", "Desk already at %.1f cm", target);
+            }
+
+  - platform: template
+    name: "Preset 2 (standing)"
+    id: standing
+    on_press:
+      then:
+        - script.execute: stop_all_motion
+        - delay: 200ms
+        - lambda: |-
+            int target = id(standing_target).state;
+            int current = id(desk_height).state;
+
+            if (isnan(current)) {
+              ESP_LOGW("preset2", "Desk height unknown — aborting move.");
+              return;
+            }
+
+            if (current > target) {
+              ESP_LOGI("preset2", "Desk too high (%.1f cm) — moving down to %.1f cm", current, target);
+              id(move_down_to_target).execute(target);
+            } else if (current < target) {
+              ESP_LOGI("preset2", "Desk too low (%.1f cm) — moving up to %.1f cm", current, target);
+              id(move_up_to_target).execute(target);
+            } else {
+              ESP_LOGI("preset2", "Desk already at %.1f cm", target);
+            }
+
+sensor:
+  - platform: template
+    name: "Standing Desk Position"
+    id: desk_height
+    unit_of_measurement: "cm"
+    accuracy_decimals: 0
+
+
+binary_sensor:
+  - platform: template
+    name: "Desk Moving"
+    id: desk_moving
+    lambda: |-
+      return id(is_moving);
+    device_class: moving
+
+script:
+  - id: stop_all_motion
+    then:
+      - lambda: |-
+          id(stop_movement) = true;
+          ESP_LOGI("motion", "Stop signal issued — cancelling any ongoing movement.");
+
+  - id: move_down_to_target
+    parameters:
+      target: int
+    then:
+      - logger.log: "Starting move down sequence..."
+      - lambda: |-
+          id(stop_movement) = false;
+          id(is_moving) = true;
+      - while:
+          condition:
+            lambda: |-
+              return (id(desk_height).state > target) && (!id(stop_movement));
+          then:
+            - uart.write:
+                id: desk
+                data: [0xA5, 0x00, 0x40, 0xBF, 0xFF]
+            - delay: 100ms
+      - lambda: |-
+          if (id(stop_movement))
+            ESP_LOGI("motion", "Movement stopped by manual override.");
+          else
+            ESP_LOGI("motion", "Reached target height (stopped moving down).");
+            id(is_moving) = false;
+
+  - id: move_up_to_target
+    parameters:
+      target: int
+    then:
+      - logger.log: "Starting move up sequence..."
+      - lambda: |-
+          id(stop_movement) = false;
+          id(is_moving) = true;
+      - while:
+          condition:
+            lambda: |-
+              return (id(desk_height).state < target) && (!id(stop_movement));
+          then:
+            - uart.write:
+                id: desk
+                data: [0xA5, 0x00, 0x20, 0xDF, 0xFF]
+            - delay: 100ms
+      - lambda: |-
+          if (id(stop_movement))
+            ESP_LOGI("motion", "Movement stopped by manual override.");
+          else
+            ESP_LOGI("motion", "Reached target height (stopped moving up).");
+            id(is_moving) = false;
